@@ -1,0 +1,2 @@
+Pillow>=10.0
+windows-capture==2.0.1; platform_system == "Windows" and platform_machine == "AMD64"

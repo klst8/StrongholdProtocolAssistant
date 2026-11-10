@@ -1,0 +1,18 @@
+# Local Python files
+__pycache__/
+*.py[cod]
+.venv/
+.env
+/build/
+/dist/
+
+# Local captures, logs and browser output
+/materials/
+/sessions/
+/.playwright-mcp/
+
+# Personal data saved by the assistant
+/saved_lineups.json
+/saved_lineups.tmp
+/custom_operator_history.json
+/custom_operator_history.tmp
