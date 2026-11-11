@@ -16,3 +16,5 @@ __pycache__/
 /saved_lineups.tmp
 /custom_operator_history.json
 /custom_operator_history.tmp
+/ui_preferences.json
+/ui_preferences.tmp

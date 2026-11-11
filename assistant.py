@@ -1,6 +1,7 @@
 import base64
 import ctypes
 from ctypes import wintypes
+from dataclasses import dataclass, replace
 from datetime import datetime
 import hashlib
 import io
@@ -60,9 +61,60 @@ HEALTH_BOX = (.60, .02, .65, .07)
 ENTRY_PHASES = {"卫戍协议大厅", "模拟难度选择", "搜寻队友中"}
 MATCH_PHASES = {"确认本局信息", "策略选择", "确定自选编队", "局内筹备", "干员详情", "装备详情"}
 
+DEFAULT_THEME = "ocean"
+THEME_LABELS = {"ocean": "海蓝", "night": "深夜", "sand": "暖砂"}
+OCEAN_COLORS = dict(
+    background="#edf2f6", surface="#ffffff", ink="#172a36", muted="#506775", border="#d5e0e7",
+    header="#172e3d", header_ink="#ffffff", badge="#9de7d9", field="#f4f8fa", field_ink="#294350",
+    status="#e8f4f6", status_ink="#225968", accent="#087d70", accent_ink="#ffffff", accent_hover="#096e63",
+    accent_pressed="#056258", trait="#087d70", selected="#d9f1ec", selected_ink="#075d54",
+    selection="#c8ece5", button="#f3f7fa", hover="#e8f1f5", pressed="#dce8ed",
+    disabled="#e3edf0", disabled_ink="#617884", tab="#eaf0f4", scroll="#c7d7df",
+    preview="#142532", preview_ink="#d0d5dd", tile="#252a32",
+)
+UI_THEMES = {
+    "ocean": OCEAN_COLORS,
+    "night": dict(
+        OCEAN_COLORS,
+        background="#10151d", surface="#1b2430", ink="#e7edf5", muted="#b0c1d4", border="#384a60",
+        header="#131c2a", badge="#9fcbff", field="#131d29", field_ink="#d9e5f3",
+        status="#233852", status_ink="#c1dcfc", accent="#8cbbf7", accent_ink="#111e33",
+        accent_hover="#a8ceff", accent_pressed="#73a8eb", trait="#a8ceff",
+        selected="#30496a", selected_ink="#e1eeff", selection="#355277",
+        button="#283649", hover="#324660", pressed="#3d5470", disabled="#242f3d",
+        disabled_ink="#8fa3ba", tab="#253347", scroll="#526c8c", preview="#0b1017",
+        preview_ink="#aebdd2", tile="#111b29",
+    ),
+    "sand": dict(
+        OCEAN_COLORS,
+        background="#efe5d6", surface="#fffaf2", ink="#35261e", muted="#6b5141", border="#dfc9b4",
+        header="#523225", badge="#ffd7a9", field="#f9efe1", field_ink="#54392d",
+        status="#f7e8d4", status_ink="#703d28", accent="#9b4c31", accent_hover="#863f29",
+        accent_pressed="#703221", trait="#903e24", selected="#f5ddc6", selected_ink="#753b23",
+        selection="#f0d4ba", button="#f7ecde", hover="#f4e2d0", pressed="#ead3be",
+        disabled="#eee1d4", disabled_ink="#775d4f", tab="#f3e6d7", scroll="#d4b69d",
+        preview="#30241e", preview_ink="#edddcc", tile="#3c2f29",
+    ),
+}
+
+
+def load_ui_theme(path):
+    try:
+        preferences = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return DEFAULT_THEME
+    theme = preferences.get("theme") if isinstance(preferences, dict) else None
+    return theme if isinstance(theme, str) and theme in UI_THEMES else DEFAULT_THEME
+
 
 def normalize(value):
     return re.sub(r"\s+", "", value)
+
+
+@dataclass(frozen=True)
+class Lineup:
+    operators: tuple[str, ...] = ()
+    equipment: tuple[str, ...] = ()
 
 
 def load_presets(path, *, allow_empty=False):
@@ -76,20 +128,32 @@ def parse_presets(data, *, allow_empty=False):
     presets = {}
     for preset in data["presets"]:
         if not isinstance(preset, dict):
-            raise ValueError("每套阵容都需要填写 name 和 operators")
+            raise ValueError("每套阵容都需要是一个对象")
         name = preset.get("name")
-        operators = preset.get("operators")
         if not isinstance(name, str) or not name.strip() or name.strip() in presets:
             raise ValueError("阵容名称不能为空或重复")
-        if not isinstance(operators, list) or not operators or any(
-            not isinstance(operator, str) or not normalize(operator) for operator in operators
-        ):
-            raise ValueError(f"{name} 的 operators 需要填写非空干员名称")
-        operators = tuple(normalize(operator) for operator in operators)
-        if len(set(operators)) != len(operators):
-            raise ValueError(f"{name} 中有重复干员")
-        presets[name.strip()] = operators
+        operators = parse_lineup_members(preset.get("operators", []), name, "干员")
+        equipment = parse_lineup_members(preset.get("equipment", []), name, "装备")
+        if not operators and not equipment:
+            raise ValueError(f"{name} 至少需要一名干员或一件装备")
+        presets[name.strip()] = Lineup(operators, equipment)
     return presets
+
+
+def parse_lineup_members(values, name, label):
+    if not isinstance(values, list) or any(not isinstance(value, str) or not normalize(value) for value in values):
+        raise ValueError(f"{name} 的{label}需要填写非空名称")
+    members = tuple(normalize(value) for value in values)
+    if len(set(members)) != len(members):
+        raise ValueError(f"{name} 中有重复{label}")
+    return members
+
+
+def serialize_presets(lineups):
+    return {"presets": [
+        {"name": name, "operators": lineup.operators, "equipment": lineup.equipment}
+        for name, lineup in lineups.items()
+    ]}
 
 
 def recognize_names(lines, vocabulary):
@@ -579,6 +643,7 @@ class RecommendationOverlay:
         tip = round(height * .741)
         arrow_height = max(42, round(height * .097))
         padding = max(5, round(arrow_height * .12))
+        overlay_top = tip - arrow_height - padding
         if arrow_height != self.hand_height:
             hand_width = max(1, round(self.hand.width * arrow_height / self.hand.height))
             resized = self.hand.resize((hand_width, arrow_height), Image.Resampling.LANCZOS)
@@ -601,61 +666,169 @@ class RecommendationOverlay:
             self.hand_height = arrow_height
         self.canvas.delete("all")
         tip_offset = padding + round((self.hand_photo.width() - 2 * padding) * self.tip_fraction)
-        for center in arrows:
+        overlay_height = self.hand_photo.height()
+        # Card edges relative to the game client, centered on the existing pointer targets.
+        card_half_width = round(width * .054)
+        card_top = round(height * .738) - overlay_top
+        card_bottom = round(height * .991) - overlay_top
+        border_width = max(2, round(height * .0035))
+        for center, outline in arrows:
             x = round(center * width)
+            if outline:
+                self.canvas.create_rectangle(x - card_half_width, card_top, x + card_half_width, card_bottom,
+                                             outline="#ff3030", width=border_width)
+                overlay_height = max(overlay_height, card_bottom + border_width)
             self.canvas.create_image(x - tip_offset, 0, image=self.hand_photo, anchor="nw")
         # HWND_TOPMOST with SWP_NOACTIVATE | SWP_SHOWWINDOW.
-        self.user.SetWindowPos(self.hwnd, -1, left, top + tip - arrow_height - padding,
-                               width, self.hand_photo.height(), 0x0010 | 0x0040)
+        self.user.SetWindowPos(self.hwnd, -1, left, top + overlay_top, width, overlay_height, 0x0010 | 0x0040)
+
+
+class FloatingBall:
+    def __init__(self, parent, restore):
+        size = 54
+        transparent = "#ff00ff"
+        window = self.window = tk.Toplevel(parent)
+        window.withdraw()
+        window.overrideredirect(True)
+        window.attributes("-topmost", True)
+        window.attributes("-transparentcolor", transparent)
+        work_area = wintypes.RECT(0, 0, parent.winfo_screenwidth(), parent.winfo_screenheight())
+        ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work_area), 0)  # SPI_GETWORKAREA
+        window.geometry(f"{size}x{size}+{work_area.right - size - 20}+{work_area.bottom - size - 20}")
+        canvas = self.canvas = tk.Canvas(window, background=transparent, highlightthickness=0, cursor="hand2")
+        canvas.pack(fill="both", expand=True)
+        self.circle = canvas.create_oval(2, 2, size - 2, size - 2, width=2)
+        self.label = canvas.create_text(size // 2, size // 2, text="卫", font=("Microsoft YaHei UI", 16, "bold"))
+        self.restore = restore
+        self.press = None
+        self.dragging = False
+        canvas.bind("<ButtonPress-1>", self.start_drag)
+        canvas.bind("<B1-Motion>", self.drag)
+        canvas.bind("<ButtonRelease-1>", self.release)
+        window.bind("<Map>", self.keep_game_focus)
+
+    def show(self, colors):
+        self.canvas.itemconfigure(self.circle, fill=colors["header"], outline=colors["badge"])
+        self.canvas.itemconfigure(self.label, fill=colors["header_ink"])
+        self.window.deiconify()
+
+    def keep_game_focus(self, event):
+        if event.widget is self.window:
+            user = ctypes.windll.user32
+            user.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+            user.GetAncestor.restype = wintypes.HWND
+            hwnd = user.GetAncestor(self.window.winfo_id(), 2)  # GA_ROOT
+            style = user.GetWindowLongW(wintypes.HWND(hwnd), -20)  # GWL_EXSTYLE
+            user.SetWindowLongW(wintypes.HWND(hwnd), -20, style | 0x08000000)  # WS_EX_NOACTIVATE
+
+    def start_drag(self, event):
+        self.press = (event.x_root, event.y_root, self.window.winfo_rootx(), self.window.winfo_rooty())
+        self.dragging = False
+
+    def drag(self, event):
+        if self.press is None:
+            return
+        mouse_x, mouse_y, x, y = self.press
+        dx, dy = event.x_root - mouse_x, event.y_root - mouse_y
+        if self.dragging or max(abs(dx), abs(dy)) >= 5:
+            self.dragging = True
+            self.window.geometry(f"+{x + dx}+{y + dy}")
+
+    def release(self, event):
+        if self.press is not None and not self.dragging and self.canvas.find_withtag("current"):
+            self.restore()
+        self.press = None
 
 
 class Assistant(tk.Tk):
     def configure_theme(self):
-        background = "#edf2f6"
-        surface = "#ffffff"
-        ink = "#172a36"
-        muted = "#506775"
-        border = "#d5e0e7"
-        accent = "#087d70"
+        colors = self.colors = UI_THEMES[self.theme_choice.get()]
+        background, surface, ink, muted, border, accent = (
+            colors[key] for key in ("background", "surface", "ink", "muted", "border", "accent")
+        )
         font = ("Microsoft YaHei UI", 9)
         self.configure(background=background)
-        self.option_add("*Font", font)
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure(".", font=font, foreground=ink, background=surface,
-                        bordercolor=border, lightcolor=border, darkcolor=border)
+                        bordercolor=border, lightcolor=border, darkcolor=border, focuscolor=accent)
         style.configure("Shell.TFrame", background=background)
         style.configure("TLabelFrame", background=surface, bordercolor=border, relief="solid")
         style.configure("TLabelFrame.Label", font=("Microsoft YaHei UI", 9, "bold"),
                         foreground=ink, background=surface)
         style.configure("Muted.TLabel", foreground=muted)
-        style.configure("Header.TFrame", background="#172e3d")
-        style.configure("Header.TLabel", foreground="#ffffff", background="#172e3d",
+        style.configure("Header.TFrame", background=colors["header"])
+        style.configure("Header.TLabel", foreground=colors["header_ink"], background=colors["header"],
                         font=("Microsoft YaHei UI", 16, "bold"))
-        style.configure("HeaderBadge.TLabel", foreground="#9de7d9", background="#172e3d",
+        style.configure("HeaderBadge.TLabel", foreground=colors["badge"], background=colors["header"],
                         font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Status.TLabel", foreground="#225968", background="#e8f4f6", padding=(8, 5))
-        style.configure("TEntry", fieldbackground="#f8fbfc", padding=(6, 4))
-        style.map("TEntry", bordercolor=[("focus", accent)])
-        style.configure("TButton", padding=(7, 4), background="#f3f7fa", relief="flat")
-        style.map("TButton", background=[("disabled", "#f5f7f9"), ("pressed", "#dce8ed"),
-                                         ("active", "#e8f1f5")],
-                  foreground=[("disabled", "#667d8a")], bordercolor=[("focus", accent)])
-        style.configure("Accent.TButton", background=accent, foreground="#ffffff")
-        style.map("Accent.TButton", background=[("disabled", "#e3edf0"), ("pressed", "#056258"),
-                                                ("active", "#096e63")],
-                  foreground=[("disabled", "#617884")])
-        style.configure("Selected.TButton", background="#d9f1ec", foreground="#075d54")
-        style.map("Selected.TButton", background=[("pressed", "#bce6db"), ("active", "#caede4")])
+        style.configure("Theme.TMenubutton", padding=(8, 4), relief="flat", background=colors["button"],
+                        foreground=ink, arrowcolor=ink)
+        style.map("Theme.TMenubutton", background=[("active", colors["hover"])])
+        style.configure("Status.TLabel", foreground=colors["status_ink"],
+                        background=colors["status"], padding=(8, 5))
+        style.configure("TEntry", fieldbackground=colors["field"], insertcolor=ink,
+                        selectbackground=colors["selection"], selectforeground=ink, padding=(6, 4))
+        style.map("TEntry", bordercolor=[("focus", accent)], fieldbackground=[("disabled", colors["disabled"])],
+                  foreground=[("disabled", colors["disabled_ink"])])
+        style.configure("TButton", padding=(7, 4), background=colors["button"], relief="flat")
+        style.map("TButton", background=[("disabled", colors["disabled"]), ("pressed", colors["pressed"]),
+                                         ("active", colors["hover"])],
+                  foreground=[("disabled", colors["disabled_ink"])], bordercolor=[("focus", accent)])
+        style.configure("Accent.TButton", background=accent, foreground=colors["accent_ink"])
+        style.map("Accent.TButton", background=[("disabled", colors["disabled"]),
+                                               ("pressed", colors["accent_pressed"]),
+                                               ("active", colors["accent_hover"])],
+                  foreground=[("disabled", colors["disabled_ink"])])
+        style.configure("Selected.TButton", background=colors["selected"], foreground=colors["selected_ink"])
+        style.map("Selected.TButton", background=[("pressed", colors["pressed"]), ("active", colors["selection"])])
         style.configure("TNotebook", background=surface, borderwidth=1, tabmargins=(0, 0, 0, 0))
-        style.configure("TNotebook.Tab", padding=(13, 5), background="#eaf0f4", foreground=muted)
-        style.map("TNotebook.Tab", background=[("selected", "#d9f1ec"), ("active", "#e2f0f0")],
-                  foreground=[("selected", "#075d54")])
-        style.configure("Vertical.TScrollbar", background="#c7d7df", troughcolor="#f0f5f8",
-                        borderwidth=0, arrowsize=12)
+        style.configure("TNotebook.Tab", padding=(13, 5), background=colors["tab"], foreground=muted)
+        style.map("TNotebook.Tab", background=[("selected", colors["selected"]), ("active", colors["hover"])],
+                  foreground=[("selected", colors["selected_ink"])])
+        style.configure("TCheckbutton", indicatorbackground=colors["field"], indicatorforeground=ink)
+        style.map("TCheckbutton", background=[("active", surface)],
+                  indicatorbackground=[("selected", colors["selected"]), ("!selected", colors["field"])])
+        style.configure("Vertical.TScrollbar", background=colors["scroll"], troughcolor=background,
+                        arrowcolor=ink, borderwidth=0, arrowsize=12)
+        style.map("Vertical.TScrollbar", background=[("active", colors["pressed"])])
+
+    def apply_widget_colors(self):
+        colors = self.colors
+        self.theme_button.configure(text=f"配色：{THEME_LABELS[self.theme_choice.get()]}")
+        self.theme_menu.configure(background=colors["surface"], foreground=colors["ink"],
+                                  activebackground=colors["selected"], activeforeground=colors["selected_ink"],
+                                  selectcolor=colors["ink"])
+        self.left_canvas.configure(background=colors["surface"])
+        self.equipment_canvas.configure(background=colors["surface"])
+        self.preview_canvas.configure(background=colors["preview"])
+        self.preview_canvas.itemconfigure("empty_preview", fill=colors["preview_ink"])
+        self.detail_portrait.configure(background=colors["field"])
+        for view in (self.operator_details, self.runtime_log):
+            view.configure(background=colors["field"], foreground=colors["field_ink"],
+                           selectbackground=colors["selection"], selectforeground=colors["ink"])
+        self.operator_details.tag_configure("trait_name", foreground=colors["trait"])
+        for tiles in (self.avatar_tiles, self.equipment_tiles, self.tracked_tiles, self.tracked_equipment_tiles,
+                      self.lineup_tiles, self.lineup_equipment_tiles):
+            for tile in tiles:
+                tile.configure(background=colors["tile"])
+
+    def change_ui_theme(self):
+        self.configure_theme()
+        self.apply_widget_colors()
+        temporary = self.ui_preferences_path.with_suffix(".tmp")
+        try:
+            temporary.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps({"theme": self.theme_choice.get()}), encoding="utf-8")
+            temporary.replace(self.ui_preferences_path)
+        except OSError:
+            self.log_message("无法保存界面配色，下次启动时可能恢复为之前的设置。")
 
     def __init__(self):
         super().__init__()
+        self.option_add("*Font", ("Microsoft YaHei UI", 9))
+        self.ui_preferences_path = DATA_DIR / "ui_preferences.json"
+        self.theme_choice = tk.StringVar(self, value=load_ui_theme(self.ui_preferences_path))
         self.configure_theme()
         self.title("卫戍选调助手")
         self.iconbitmap(default=str(HERE / "assets" / "app_icon.ico"))
@@ -685,6 +858,7 @@ class Assistant(tk.Tk):
         self.failed_window = None
         self.session_state = "idle"
         self.closing = False
+        self.floating_ball = None
         self.status = tk.StringVar()
         self.game_status = tk.StringVar()
         self.preset_name = tk.StringVar()
@@ -724,7 +898,14 @@ class Assistant(tk.Tk):
         header = ttk.Frame(self, style="Header.TFrame", padding=(18, 13))
         header.pack(fill="x")
         ttk.Label(header, text="卫戍选调助手", style="Header.TLabel").pack(side="left")
-        ttk.Label(header, text="实时辅助", style="HeaderBadge.TLabel").pack(side="right")
+        self.theme_button = ttk.Menubutton(header, style="Theme.TMenubutton")
+        self.theme_menu = tk.Menu(self.theme_button, tearoff=False)
+        for theme, label in THEME_LABELS.items():
+            self.theme_menu.add_radiobutton(label=label, value=theme, variable=self.theme_choice,
+                                            command=self.change_ui_theme)
+        self.theme_button.configure(menu=self.theme_menu)
+        self.theme_button.pack(side="right")
+        ttk.Label(header, text="实时辅助", style="HeaderBadge.TLabel").pack(side="right", padx=(0, 12))
         body = ttk.Frame(self, style="Shell.TFrame", padding=(14, 12, 14, 14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=3)
@@ -732,8 +913,7 @@ class Assistant(tk.Tk):
         body.rowconfigure(0, weight=1)
         left = ttk.LabelFrame(body, text="对局识别与推荐", padding=6)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        canvas = tk.Canvas(left, width=400, height=1, highlightthickness=0,
-                           background=ttk.Style(self).lookup("TFrame", "background") or self.cget("background"))
+        canvas = self.left_canvas = tk.Canvas(left, width=400, height=1, highlightthickness=0)
         scrollbar = ttk.Scrollbar(left, orient="vertical", command=canvas.yview)
         scrollbar.pack(side="right", fill="y")
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -803,11 +983,13 @@ class Assistant(tk.Tk):
         for column in range(5):
             saved_panel.columnconfigure(column, weight=1, uniform="saved_slots")
         self.refresh_saved_buttons()
-        self.lineup_panel = ttk.LabelFrame(panel, text="阵容干员", padding=6)
+        self.lineup_panel = ttk.LabelFrame(panel, text="阵容预览", padding=6)
         self.lineup_grid = ttk.Frame(self.lineup_panel)
         self.lineup_grid.pack(fill="x")
         self.lineup_tiles = []
-        lineup_actions = ttk.Frame(self.lineup_panel)
+        self.lineup_equipment_grid = ttk.Frame(self.lineup_panel)
+        self.lineup_equipment_tiles = []
+        lineup_actions = self.lineup_actions = ttk.Frame(self.lineup_panel)
         lineup_actions.pack(anchor="e", pady=(4, 0))
         self.lineup_action = ttk.Button(lineup_actions, text="一键追踪", style="Accent.TButton",
                                         command=self.apply_lineup_action)
@@ -886,10 +1068,13 @@ class Assistant(tk.Tk):
             self.tracked_grid.columnconfigure(column, weight=1)
             self.tracked_equipment_grid.columnconfigure(column, weight=1)
             self.lineup_grid.columnconfigure(column, weight=1)
+            self.lineup_equipment_grid.columnconfigure(column, weight=1)
+        self.apply_widget_colors()
         self.render()
         self.pact_tabs.bind("<<NotebookTabChanged>>", self.on_pact_tab_changed)
         self.after_idle(self.on_pact_tab_changed)
         self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Unmap>", self.on_minimize, add="+")
         self.after(100, self.poll)
         self.after(0, self.refresh_game)
 
@@ -924,7 +1109,7 @@ class Assistant(tk.Tk):
                                 command=lambda rank=tier: self.select_equipment_tier(rank))
             button.pack(side="left", fill="x", expand=True, padx=1)
             self.equipment_tier_buttons[tier] = button
-        equipment = tk.Canvas(parent, height=132, highlightthickness=0, background="#ffffff")
+        equipment = tk.Canvas(parent, height=132, highlightthickness=0)
         self.equipment_canvas = equipment
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=equipment.yview)
         scrollbar.pack(side="right", fill="y")
@@ -960,7 +1145,7 @@ class Assistant(tk.Tk):
 
         preview = ttk.LabelFrame(sidebar, text="实时截图", padding=10)
         preview.pack(fill="x", pady=(0, 8))
-        self.preview_canvas = tk.Canvas(preview, width=300, height=172, background="#142532", highlightthickness=0)
+        self.preview_canvas = tk.Canvas(preview, width=300, height=172, highlightthickness=0)
         self.preview_canvas.pack(fill="x")
         self.preview_canvas.bind("<Configure>", self.draw_preview)
         ttk.Label(preview, textvariable=self.preview_status, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
@@ -972,16 +1157,14 @@ class Assistant(tk.Tk):
         logs = ttk.LabelFrame(split, text="运行日志", padding=10)
         split.add(details, weight=1)
         split.add(logs, weight=1)
-        self.detail_portrait = tk.Canvas(details, width=96, height=96, background="#f4f8fa",
-                                         highlightthickness=0)
+        self.detail_portrait = tk.Canvas(details, width=96, height=96, highlightthickness=0)
         self.detail_operator = None
         self.detail_photo = None
         detail_text = ttk.Frame(details)
         detail_text.pack(side="left", fill="both", expand=True)
         self.operator_details = self.build_sidebar_text(detail_text)
         self.operator_details.tag_configure("operator_name", font=("Microsoft YaHei UI", 12, "bold"))
-        self.operator_details.tag_configure("trait_name", foreground="#087d70",
-                                            font=("Microsoft YaHei UI", 9, "bold"))
+        self.operator_details.tag_configure("trait_name", font=("Microsoft YaHei UI", 9, "bold"))
         self.show_operator_details()
         self.runtime_log = self.build_sidebar_text(logs)
         self.log_message("助手已启动，正在查找游戏窗口。")
@@ -989,11 +1172,9 @@ class Assistant(tk.Tk):
     def build_sidebar_text(self, parent):
         scrollbar = ttk.Scrollbar(parent)
         scrollbar.pack(side="right", fill="y")
-        view = tk.Text(parent, width=30, height=5, wrap="word", padx=8, pady=7,
-                                   background="#f4f8fa", foreground="#294350", relief="flat",
-                                   borderwidth=0, highlightthickness=0, spacing3=3,
-                                   selectbackground="#c8ece5", selectforeground="#172a36",
-                                   state="disabled", yscrollcommand=scrollbar.set)
+        view = tk.Text(parent, width=30, height=5, wrap="word", padx=8, pady=7, relief="flat",
+                       borderwidth=0, highlightthickness=0, spacing3=3,
+                       state="disabled", yscrollcommand=scrollbar.set)
         view.pack(fill="both", expand=True)
         scrollbar.configure(command=view.yview)
         return view
@@ -1056,6 +1237,8 @@ class Assistant(tk.Tk):
         canvas.create_image(48, 48, image=self.detail_photo)
 
     def draw_preview(self, _event=None):
+        if not self.winfo_ismapped():
+            return
         canvas = self.preview_canvas
         width, height = canvas.winfo_width(), canvas.winfo_height()
         if width <= 1 or height <= 1:
@@ -1083,7 +1266,8 @@ class Assistant(tk.Tk):
         canvas.delete("all")
         if self.preview_image is None:
             self.preview_photo = None
-            canvas.create_text(width // 2, height // 2, text="暂无截图", fill="#d0d5dd")
+            canvas.create_text(width // 2, height // 2, text="暂无截图", fill=self.colors["preview_ink"],
+                               tags=("empty_preview",))
             self.preview_status.set("请还原游戏窗口并切回游戏" if self.game else "等待连接游戏")
             return
         thumbnail = self.preview_image.copy()
@@ -1169,7 +1353,7 @@ class Assistant(tk.Tk):
         self.render()
 
     def save_lineup(self):
-        if not self.tracked_operators:
+        if not (self.tracked_operators or self.tracked_equipment):
             return
         if len(self.saved_lineups) >= 20:
             messagebox.showinfo(
@@ -1182,12 +1366,13 @@ class Assistant(tk.Tk):
         while f"阵容{index:03d}" in self.saved_lineups:
             index += 1
         name = f"阵容{index:03d}"
-        if self.write_saved_lineups({**self.saved_lineups, name: self.tracked_operators}):
+        lineup = Lineup(self.tracked_operators, self.tracked_equipment)
+        if self.write_saved_lineups({**self.saved_lineups, name: lineup}):
             self.render()
             self.log_message(f"已保存阵容 · {name}")
 
     def write_saved_lineups(self, lineups):
-        data = {"presets": [{"name": key, "operators": operators} for key, operators in lineups.items()]}
+        data = serialize_presets(lineups)
         temporary = self.saved_lineups_path.with_suffix(".tmp")
         try:
             self.saved_lineups_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1232,7 +1417,7 @@ class Assistant(tk.Tk):
         name = self.saved_lineup_name.get()
         if name not in self.saved_lineups or self.lineup_draft is not None:
             return
-        data = {"presets": [{"name": name, "operators": self.saved_lineups[name]}]}
+        data = serialize_presets({name: self.saved_lineups[name]})
         payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         code = "SP1-" + base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
         try:
@@ -1247,15 +1432,15 @@ class Assistant(tk.Tk):
         if self.lineup_draft is not None:
             return self.lineup_draft
         if self.saved_lineup_name.get():
-            return self.saved_lineups.get(self.saved_lineup_name.get(), ())
-        return self.presets.get(self.preset_name.get(), ())
+            return self.saved_lineups.get(self.saved_lineup_name.get(), Lineup())
+        return self.presets.get(self.preset_name.get(), Lineup())
 
     def toggle_lineup_edit(self):
         if self.lineup_draft is None:
             self.lineup_draft = self.preview_lineup()
         else:
-            if not self.lineup_draft:
-                messagebox.showwarning("变更阵容", "阵容至少需要保留一名干员。", parent=self)
+            if not (self.lineup_draft.operators or self.lineup_draft.equipment):
+                messagebox.showwarning("变更阵容", "阵容至少需要保留一名干员或一件装备。", parent=self)
                 return
             lineups = {**self.saved_lineups, self.saved_lineup_name.get(): self.lineup_draft}
             if not self.write_saved_lineups(lineups):
@@ -1269,15 +1454,28 @@ class Assistant(tk.Tk):
             self.lineup_draft = None
             self.refresh_saved_buttons()
         else:
-            self.tracked_operators = tuple(dict.fromkeys((*self.tracked_operators, *self.preview_lineup())))
+            lineup = self.preview_lineup()
+            self.tracked_operators = tuple(dict.fromkeys((*self.tracked_operators, *lineup.operators)))
+            self.tracked_equipment = tuple(dict.fromkeys((*self.tracked_equipment, *lineup.equipment)))
         self.render()
 
     def click_lineup_operator(self, name):
         if self.lineup_draft is None:
             self.tracked_operators = tuple(dict.fromkeys((*self.tracked_operators, name)))
         else:
-            self.lineup_draft = tuple(operator for operator in self.lineup_draft if operator != name)
+            self.lineup_draft = replace(self.lineup_draft, operators=tuple(
+                operator for operator in self.lineup_draft.operators if operator != name
+            ))
         self.render()
+
+    def click_lineup_equipment(self, name):
+        if self.lineup_draft is None:
+            self.track_equipment(name)
+        else:
+            self.lineup_draft = replace(self.lineup_draft, equipment=tuple(
+                item for item in self.lineup_draft.equipment if item != name
+            ))
+            self.render()
 
     def clear_regions(self):
         self.regions.clear()
@@ -1572,7 +1770,7 @@ class Assistant(tk.Tk):
         if panel is self.avatar_grid and self.operator_view == "search":
             custom.update(self.search_results)
         if equipment:
-            targets = sorted(targets, key=EQUIPMENT_RANK.__getitem__)
+            targets = sorted(targets, key=lambda name: EQUIPMENT_RANK.get(name, "\uffff"))
         else:
             targets = sorted(targets, key=lambda name: 8 if name in custom else OPERATOR_TIERS.get(name, 7))
         while len(tiles) > len(targets):
@@ -1580,7 +1778,7 @@ class Assistant(tk.Tk):
         for index, name in enumerate(targets):
             if index == len(tiles):
                 tile = tk.Label(panel, width=64, height=64, bd=0,
-                                highlightthickness=2, bg="#252a32")
+                                highlightthickness=2, bg=self.colors["tile"])
                 tile.grid(row=index // 5, column=index % 5, padx=3, pady=3)
                 tiles.append(tile)
             tile = tiles[index]
@@ -1633,7 +1831,8 @@ class Assistant(tk.Tk):
             except OSError as error:
                 self.log_message(f"无法保存自选干员历史 · {error}")
         if self.lineup_draft is not None:
-            self.lineup_draft = tuple(dict.fromkeys((*self.lineup_draft, name)))
+            operators = tuple(dict.fromkeys((*self.lineup_draft.operators, name)))
+            self.lineup_draft = replace(self.lineup_draft, operators=operators)
             self.render()
         elif name not in self.tracked_operators:
             self.tracked_operators += (name,)
@@ -1643,7 +1842,8 @@ class Assistant(tk.Tk):
         if self.pact:
             members = PACT_OPERATORS[self.pact]
             if self.lineup_draft is not None:
-                self.lineup_draft = tuple(dict.fromkeys((*self.lineup_draft, *members)))
+                operators = tuple(dict.fromkeys((*self.lineup_draft.operators, *members)))
+                self.lineup_draft = replace(self.lineup_draft, operators=operators)
             else:
                 self.tracked_operators = tuple(dict.fromkeys((*self.tracked_operators, *members)))
             self.render()
@@ -1658,7 +1858,11 @@ class Assistant(tk.Tk):
         self.render()
 
     def track_equipment(self, name):
-        if name not in self.tracked_equipment:
+        if self.lineup_draft is not None:
+            equipment = tuple(dict.fromkeys((*self.lineup_draft.equipment, name)))
+            self.lineup_draft = replace(self.lineup_draft, equipment=equipment)
+            self.render()
+        elif name not in self.tracked_equipment:
             self.tracked_equipment += (name,)
             self.render()
 
@@ -1667,7 +1871,7 @@ class Assistant(tk.Tk):
         self.render()
 
     def vocabulary(self):
-        vocabulary = {name for preset in self.presets.values() for name in preset}
+        vocabulary = {name for preset in self.presets.values() for name in preset.operators}
         vocabulary.update(self.tracked_operators)
         return vocabulary | PACT_MEMBERS if self.pact else vocabulary
 
@@ -1699,8 +1903,8 @@ class Assistant(tk.Tk):
             button.configure(text=("✓ " if selected else "") + pact,
                              style="Selected.TButton" if selected else "TButton")
         self.arrow_slots = (
-            *(slot["x"] for slot in self.readings.get("operator_slots", ()) if slot["name"] in picks),
-            *(slot["x"] for slot in self.readings.get("equipment_slots", ()) if slot["name"] in equipment_picks),
+            *((slot["x"], True) for slot in self.readings.get("operator_slots", ()) if slot["name"] in picks),
+            *((slot["x"], False) for slot in self.readings.get("equipment_slots", ()) if slot["name"] in equipment_picks),
         )
         if self.pact_tabs.select() == str(self.equipment_tab):
             for tier, button in self.equipment_tier_buttons.items():
@@ -1717,14 +1921,21 @@ class Assistant(tk.Tk):
         self.lineup_code_entry.configure(state="disabled" if editing else "normal")
         self.import_code_button.configure(state="disabled" if editing else "normal")
         if preview:
-            title = f"阵容干员 · {preview}"
+            title = f"阵容预览 · {preview}"
             if editing:
-                title += "（编辑中，点击头像移除）"
+                title += "（编辑中，双击图标移除）"
             self.lineup_panel.configure(text=title)
             self.lineup_panel.pack(fill="x", before=self.pact_panel, pady=(0, 8))
             self.lineup_action.configure(text="取消变更" if editing else "一键追踪")
-            self.update_avatars(self.lineup_grid, self.lineup_tiles, self.preview_lineup(),
+            preview_members = self.preview_lineup()
+            self.update_avatars(self.lineup_grid, self.lineup_tiles, preview_members.operators,
                                 picks, self.click_lineup_operator, allow_placeholder=True)
+            self.update_avatars(self.lineup_equipment_grid, self.lineup_equipment_tiles, preview_members.equipment,
+                                equipment_picks, self.click_lineup_equipment, allow_placeholder=True, equipment=True)
+            if preview_members.equipment:
+                self.lineup_equipment_grid.pack(fill="x", before=self.lineup_actions, pady=(5, 0))
+            else:
+                self.lineup_equipment_grid.pack_forget()
         else:
             self.lineup_panel.pack_forget()
         if saved:
@@ -1799,12 +2010,34 @@ class Assistant(tk.Tk):
         else:
             self.tracked_equipment_grid.pack_forget()
         self.tracked_panel.configure(text=title)
-        self.clear_tracking_button.configure(
-            state="normal" if self.tracked_operators or self.tracked_equipment else "disabled")
-        self.save_lineup_button.configure(state="normal" if self.tracked_operators else "disabled")
+        tracking_state = "normal" if self.tracked_operators or self.tracked_equipment else "disabled"
+        self.clear_tracking_button.configure(state=tracking_state)
+        self.save_lineup_button.configure(state=tracking_state)
+
+    def on_minimize(self, event):
+        if event.widget is self and self.state() == "iconic" and not self.closing:
+            self.after_idle(self.show_floating_ball)
+
+    def show_floating_ball(self):
+        if self.state() != "iconic" or self.closing:
+            return
+        if self.floating_ball is None:
+            self.floating_ball = FloatingBall(self, self.restore_from_ball)
+        if self.thumbnail:
+            self.thumbnail.close()
+        self.withdraw()
+        self.floating_ball.show(self.colors)
+
+    def restore_from_ball(self):
+        self.floating_ball.window.withdraw()
+        self.deiconify()
+        self.lift()
+        self.after_idle(self.draw_preview)
 
     def close(self):
         self.closing = True
+        if self.floating_ball:
+            self.floating_ball.window.withdraw()
         if self.thumbnail:
             self.thumbnail.close()
         self.stop.set()

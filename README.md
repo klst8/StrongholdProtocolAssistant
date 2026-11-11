@@ -4,7 +4,11 @@ Windows 桌面工具，面向《明日方舟》国服「卫戍协议·规程」�
 
 ## 启动
 
-从 [GitHub Releases](https://github.com/klst8/StrongholdProtocolAssistant/releases) 下载 Windows 64 位免安装版 `StrongholdProtocolAssistant.exe`，双击即可打开，无需安装 Python。识别功能依赖 Windows 的简体中文 OCR 语言功能。免安装版把阵容、自选历史和日志保存在 `%LOCALAPPDATA%\StrongholdProtocolAssistant`。
+从 [GitHub Releases](https://github.com/klst8/StrongholdProtocolAssistant/releases) 下载 Windows 64 位免安装版 `StrongholdProtocolAssistant.exe`，双击即可打开，无需安装 Python。识别功能依赖 Windows 的简体中文 OCR 语言功能。免安装版把阵容、自选历史、界面配色和日志保存在 `%LOCALAPPDATA%\StrongholdProtocolAssistant`。
+
+点击窗口右上角的「配色」，可在海蓝、深夜和暖砂之间切换。配色立即生效，重启后保留。
+
+点击标题栏的最小化按钮，助手会收成可拖动的「卫」字悬浮球。单击悬浮球恢复主窗口。收起期间，游戏识别、对局记录和卡牌推荐提示会继续运行。
 
 维护者可在安装项目依赖和 PyInstaller 后运行 `python -m PyInstaller StrongholdProtocolAssistant.spec`，生成 `dist/StrongholdProtocolAssistant.exe`。
 
@@ -27,11 +31,13 @@ python assistant.py
 
 右侧「实时截图」在连接游戏后通过 Windows 窗口预览显示实时画面。窗口预览不可用时，会显示最近一次识别截图。「运行日志」显示连接、自动开始、暂停、阶段变化、错误和保存结果。
 
-自动定位到商店卡槽时，助手会在游戏画面上用黄色箭头标出本轮推荐的干员。箭头随识别更新，鼠标可穿透。手动框选候选区时，推荐显示在侧窗。
+自动定位到商店卡槽时，助手会用发光手指指向推荐卡牌，并给推荐干员的卡牌加红框。提示随识别更新，鼠标可穿透。手动框选候选区时，干员推荐显示在侧窗。
 
 ## 导入阵容
 
-在顶部输入框粘贴阵容码，按回车或点击「导入阵容码」打开「阵容干员」预览。点击头像可逐个追踪，也可以点「一键追踪」加入整套。在「我的阵容」打开已保存的阵容，再点「复制阵容码」即可分享。
+「保存阵容」会保存本局追踪的干员和装备，也支持只保存装备。在「我的阵容」打开已保存的阵容，再点「复制阵容码」即可分享。
+
+在顶部输入框粘贴阵容码，按回车或点击「导入阵容码」打开「阵容预览」。双击干员或装备图标可逐个追踪，也可以点「一键追踪」加入整套。旧阵容码仍可导入。
 
 ## 按策略盟约推荐
 
